@@ -1,0 +1,180 @@
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_marshmallow import Marshmallow
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+
+# Initialize the app
+app = Flask(__name__)
+
+# Database setup
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///phoneshop.db'
+app.config['SECRET_KEY'] = 'supersecretkey'
+db = SQLAlchemy(app)
+ma = Marshmallow(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+# Phone Model
+class Phone(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+    brand = db.Column(db.String(100))
+    price = db.Column(db.Float)
+    stock = db.Column(db.Integer)
+
+    def __init__(self, name, brand, price, stock):
+        self.name = name
+        self.brand = brand
+        self.price = price
+        self.stock = stock
+
+# User Model (for authentication)
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True)
+    password = db.Column(db.String(100))
+
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+
+# Order Model
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    phone_id = db.Column(db.Integer, db.ForeignKey('phone.id'))
+    quantity = db.Column(db.Integer)
+
+    def __init__(self, user_id, phone_id, quantity):
+        self.user_id = user_id
+        self.phone_id = phone_id
+        self.quantity = quantity
+
+# Phone Schema (for serialization)
+class PhoneSchema(ma.SQLAlchemyAutoSchema):
+    class Meta:
+        model = Phone
+
+# Order Schema (for serialization)
+class OrderSchema(ma.SQLAlchemyAutoSchema):
+    class Meta:
+        model = Order
+
+# User loader for Flask-Login
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# Routes
+
+# Register new user (for simplicity, we store plaintext passwords)
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data['username']
+    password = data['password']
+    user = User(username=username, password=password)
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({"message": "User registered successfully!"}), 201
+
+# Login user
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data['username']
+    password = data['password']
+    user = User.query.filter_by(username=username, password=password).first()
+
+    if user:
+        login_user(user)
+        return jsonify({"message": "Login successful!"}), 200
+    else:
+        return jsonify({"message": "Invalid credentials!"}), 401
+
+# Logout user
+@app.route('/logout', methods=['POST'])
+@login_required
+def logout():
+    logout_user()
+    return jsonify({"message": "Logged out successfully!"}), 200
+
+# Get all phones
+@app.route('/phones', methods=['GET'])
+def get_phones():
+    phones = Phone.query.all()
+    phone_schema = PhoneSchema(many=True)
+    return jsonify(phone_schema.dump(phones)), 200
+
+# Add a new phone
+@app.route('/phones', methods=['POST'])
+@login_required
+def add_phone():
+    data = request.get_json()
+    name = data['name']
+    brand = data['brand']
+    price = data['price']
+    stock = data['stock']
+    new_phone = Phone(name=name, brand=brand, price=price, stock=stock)
+    db.session.add(new_phone)
+    db.session.commit()
+    return jsonify({"message": "Phone added successfully!"}), 201
+
+# Update a phone
+@app.route('/phones/<int:id>', methods=['PUT'])
+@login_required
+def update_phone(id):
+    phone = Phone.query.get_or_404(id)
+    data = request.get_json()
+    phone.name = data['name']
+    phone.brand = data['brand']
+    phone.price = data['price']
+    phone.stock = data['stock']
+    db.session.commit()
+    return jsonify({"message": "Phone updated successfully!"}), 200
+
+# Delete a phone
+@app.route('/phones/<int:id>', methods=['DELETE'])
+@login_required
+def delete_phone(id):
+    phone = Phone.query.get_or_404(id)
+    db.session.delete(phone)
+    db.session.commit()
+    return jsonify({"message": "Phone deleted successfully!"}), 200
+
+# Place an order
+@app.route('/order', methods=['POST'])
+@login_required
+def place_order():
+    data = request.get_json()
+    phone_id = data['phone_id']
+    quantity = data['quantity']
+
+    phone = Phone.query.get_or_404(phone_id)
+
+    if phone.stock < quantity:
+        return jsonify({"message": "Not enough stock!"}), 400
+
+    phone.stock -= quantity
+    new_order = Order(user_id=current_user.id, phone_id=phone_id, quantity=quantity)
+    db.session.add(new_order)
+    db.session.commit()
+
+    return jsonify({"message": "Order placed successfully!"}), 201
+
+# Get orders for a user
+@app.route('/orders', methods=['GET'])
+@login_required
+def get_orders():
+    orders = Order.query.filter_by(user_id=current_user.id).all()
+    order_schema = OrderSchema(many=True)
+    return jsonify(order_schema.dump(orders)), 200
+
+# Initialize the DB (only run once, for setup purposes)
+@app.route('/init_db', methods=['GET'])
+def init_db():
+    db.create_all()
+    return jsonify({"message": "Database initialized!"}), 200
+
+if __name__ == '__main__':
+    app.run(debug=True)
